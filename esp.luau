@@ -755,7 +755,7 @@ Options('ShowName', 'Show Names', true);
 Options('ShowDistance', 'Show Distance', false);
 Options('ShowHealth', 'Show Health', false);
 Options('ShowBoxes', 'Show Boxes', true);
-Options('ShowTracers', 'Show Tracers', true);
+Options('ShowTracers', 'Show Tracers', false);
 Options('ShowDot', 'Show Head Dot', false);
 Options('VisCheck', 'Visibility Check', false);
 Options('Crosshair', 'Crosshair', false);
@@ -2514,16 +2514,16 @@ local function Update()
 	local CY = Menu:GetInstance'CrosshairY';
 	
 	if Options.Crosshair.Value then
-		CX.Visible = true;
-		CY.Visible = true;
+		--CX.Visible = true;
+		--CY.Visible = true;
 
 		CX.To = V2New((Camera.ViewportSize.X / 2) - 8, (Camera.ViewportSize.Y / 2));
 		CX.From = V2New((Camera.ViewportSize.X / 2) + 8, (Camera.ViewportSize.Y / 2));
 		CY.To = V2New((Camera.ViewportSize.X / 2), (Camera.ViewportSize.Y / 2) - 8);
 		CY.From = V2New((Camera.ViewportSize.X / 2), (Camera.ViewportSize.Y / 2) + 8);
 	else
-		CX.Visible = false;
-		CY.Visible = false;
+		--CX.Visible = false;
+		--CY.Visible = false;
 	end
 
 	if Options.MenuOpen.Value and MenuLoaded then
