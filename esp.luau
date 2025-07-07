@@ -754,7 +754,7 @@ Options('ShowTeamColor', 'Show Team Color', false);
 Options('ShowName', 'Show Names', true);
 Options('ShowDistance', 'Show Distance', false);
 Options('ShowHealth', 'Show Health', false);
-Options('ShowBoxes', 'Show Boxes', false);
+Options('ShowBoxes', 'Show Boxes', true);
 Options('ShowTracers', 'Show Tracers', true);
 Options('ShowDot', 'Show Head Dot', false);
 Options('VisCheck', 'Visibility Check', false);
@@ -1841,7 +1841,7 @@ function CreateMenu(NewPosition) -- Create Menu
 	});
 end
 
-CreateMenu();
+--CreateMenu();
 delay(999999999999, function()
 	SubMenu:Show(V2New()); -- Create the submenu
 	SubMenu:Hide();
@@ -2586,7 +2586,7 @@ local function Update()
 			if DraggingUI and Debounce.UIDrag then
 				Debounce.UIDrag = false;
 				DraggingUI = false;
-				CreateMenu(Menu:GetInstance'Main'.Position);
+				--CreateMenu(Menu:GetInstance'Main'.Position);
 			end
 		end
 		if not Debounce.Menu then
