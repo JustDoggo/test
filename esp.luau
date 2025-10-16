@@ -1,7 +1,3 @@
-assert(Drawing, 'exploit not supported')
-
-if not syn and not PROTOSMASHER_LOADED then print'Unnamed ESP only officially supports Synapse and Protosmasher! If you\'re an exploit developer and have added drawing API to your exploit, try setting syn as true then checking if that works, otherwise, DM me on discord @ cppbook.org#1968 or add an issue to the Unnamed ESP Github Repository and I\'ll see it through email!' end
-
 if not cloneref then cloneref = function(o) return o end end
 
 local UserInputService = cloneref(game:GetService'UserInputService')
@@ -154,6 +150,11 @@ local CustomTeams = { -- Games that don't use roblox's team system
 			local PlayerGuildName = PlayerStats and PlayerStats:FindFirstChild'Guild'; if not PlayerGuildName then return false; end
 
 			return PlayerGuildName.Value == LocalGuildName.Value;
+		end;
+	};
+    [893973440] = {
+		CheckTeam = function(Player)
+			return not Player:FindFirstChild("TempPlayerStatsModule").IsBeast.Value -- Beast is never on my team
 		end;
 	};
 };
@@ -2157,6 +2158,144 @@ local function CheckDistance(Instance)
 	return Pass, Distance;
 end
 
+-- === Dynamic ComputerTable tracking ===
+local TARGET_RGB = Color3.fromRGB(40, 127, 71)           -- when screen is this, use green
+local DEFAULT_RGB = Color3.fromRGB(13, 255, 227)         -- otherwise this (your current cyan)
+local TrackedComputers = {}                              -- [Model] = {parts, primary, screen, conns = {}, entry}
+
+local function computeColor(screen)
+    local ok = typeof(screen) == "Instance" and screen:IsA("BasePart")
+    if ok and screen.Color == TARGET_RGB then
+        return Color3.fromRGB(0, 255, 0)                 -- green
+    end
+    return DEFAULT_RGB
+end
+
+local function getParts(model)
+    local parts = {}
+    for _, d in ipairs(model:GetDescendants()) do
+        if d:IsA("BasePart") then table.insert(parts, d) end
+    end
+    return parts
+end
+
+local function findScreen(model)
+    -- Finds a descendant named "Screen" that’s a BasePart
+    local s = model:FindFirstChild("Screen", true)
+    if s and s:IsA("BasePart") then return s end
+    return nil
+end
+
+local function cleanupComputer(model)
+    local t = TrackedComputers[model]
+    if not t then return end
+
+    -- Remove ESP drawings for the primary, if present
+    if t.primary and t.primary.Parent == nil then
+        local key = t.primary:GetDebugId()
+        local data = shared.InstanceData[key]
+        if data and data.Instances then
+            for _, obj in pairs(data.Instances) do
+                pcall(function() obj.Visible = false; obj:Remove() end)
+            end
+            shared.InstanceData[key] = nil
+        end
+    end
+
+    -- Remove from RenderList so we stop processing it
+    RenderList.Instances[model] = nil
+
+    -- Disconnect listeners
+    for _, c in ipairs(t.conns) do
+        pcall(function() if c and c.Connected then c:Disconnect() end end)
+    end
+
+    TrackedComputers[model] = nil
+end
+
+local function upsertComputer(model)
+    -- Build/refresh tracking for this model
+    local parts = getParts(model)
+    if #parts == 0 then return end
+
+    local primary = model.PrimaryPart or parts[1]
+    local screen = findScreen(model)
+    if not primary then return end
+
+    local color = computeColor(screen)
+    local entry = RenderList:AddOrUpdateInstance(model, primary, "Computer", color)
+    entry.Parts = parts
+    entry.IsModel = true
+
+    -- Store
+    local existing = TrackedComputers[model]
+    if existing then
+        existing.parts = parts
+        existing.primary = primary
+        existing.screen = screen
+        existing.entry = entry
+    else
+        TrackedComputers[model] = { parts = parts, primary = primary, screen = screen, entry = entry, conns = {} }
+
+        -- React to screen color changes
+        if screen then
+            table.insert(TrackedComputers[model].conns, screen:GetPropertyChangedSignal("Color"):Connect(function()
+                local e = TrackedComputers[model] and TrackedComputers[model].entry
+                if e then e.Color = computeColor(screen) end
+            end))
+        end
+
+        -- If PrimaryPart changes, refresh our primary & parts next frame
+        table.insert(TrackedComputers[model].conns, model:GetPropertyChangedSignal("PrimaryPart"):Connect(function()
+            upsertComputer(model)
+        end))
+
+        -- If the model leaves the workspace or is destroyed, clean up
+        table.insert(TrackedComputers[model].conns, model.AncestryChanged:Connect(function(_, parent)
+            if parent == nil or not model:IsDescendantOf(workspace) then
+                cleanupComputer(model)
+            end
+        end))
+
+        -- Newer engines: Destroying exists; safe to wrap
+        if typeof(model.Destroying) == "RBXScriptSignal" then
+            table.insert(TrackedComputers[model].conns, model.Destroying:Connect(function()
+                cleanupComputer(model)
+            end))
+        end
+    end
+end
+
+local function registerIfComputerTable(inst)
+    if inst:IsA("Model") and inst.Name == "ComputerTable" then
+        upsertComputer(inst)
+    elseif inst.Name == "Screen" and inst:IsA("BasePart") then
+        -- If a Screen arrives first, find its ComputerTable ancestor
+        local anc = inst:FindFirstAncestorWhichIsA("Model")
+        if anc and anc.Name == "ComputerTable" then
+            upsertComputer(anc)
+        end
+    end
+end
+
+-- Initial scan
+local function ScanComputerTables()
+    for _, m in ipairs(workspace:GetDescendants()) do
+        registerIfComputerTable(m)
+    end
+end
+ScanComputerTables()
+
+-- Live create/remove
+workspace.DescendantAdded:Connect(registerIfComputerTable)
+workspace.DescendantRemoving:Connect(function(inst)
+    -- Clean if the model itself is going away
+    if inst:IsA("Model") and inst.Name == "ComputerTable" then
+        cleanupComputer(inst)
+    end
+end)
+
+
 local function UpdatePlayerData()
 	if (tick() - LastRefresh) > (Options.RefreshRate.Value / 1000) then
 		LastRefresh = tick();
@@ -2196,11 +2335,48 @@ local function UpdatePlayerData()
 				local Tracer		= Data.Instances['Tracer'];
 				local OutlineTracer	= Data.Instances['OutlineTracer'];
 
+                Data.Instances['Box'] = Data.Instances['Box'] or LineBox:Create{Thickness = 4}
+                local Box = Data.Instances['Box']
+
+                local screen = v.Screen
+                if not screen then
+                    local parentModel = v.ParentInstance
+                    if parentModel and parentModel:IsA("Model") then
+                        local s = parentModel:FindFirstChild("Screen", true)
+                        if s and s:IsA("BasePart") then
+                            screen = s
+                            v.Screen = s -- cache for next frames
+                        end
+                    end
+                end
+
 				local Pass, Distance = CheckDistance(v.Instance);
 
 				if Pass then
 					local ScreenPosition, Vis = WorldToViewport(v.Instance.Position);
 					local Color = v.Color;
+
+                    if Options.ShowBoxes.Value then
+                        if screen then
+                            if shared.am_ic3 then
+                                Box:Update(nil, nil, Color, nil, { screen })     -- only the screen
+                            else
+                                Box:Update(screen.CFrame, screen.Size, Color)
+                            end
+                        else
+                            -- fallback if no Screen found
+                            if shared.am_ic3 and type(v.Parts) == "table" and #v.Parts > 0 then
+                                Box:Update(nil, nil, Color, nil, v.Parts)
+                            elseif v.ParentInstance and v.ParentInstance:IsA("Model") then
+                                local cf, size = v.ParentInstance:GetBoundingBox()
+                                Box:Update(cf, size, Color)
+                            else
+                                Box:Update(v.Instance.CFrame, v.Instance.Size, Color)
+                            end
+                        end
+                    else
+                        Box:SetVisible(false)
+                    end
 					local OPos = Camera.CFrame:pointToObjectSpace(v.Instance.Position);
 					
 					if ScreenPosition.Z < 0 then
@@ -2273,6 +2449,7 @@ local function UpdatePlayerData()
 					DistanceTag.Visible		= false;
 					Tracer.Visible			= false;
 					OutlineTracer.Visible	= false;
+                    Box:SetVisible(false)
 				end
 
 				Data.Instances['NameTag'] 		= NameTag;
