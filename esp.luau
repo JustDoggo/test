@@ -2166,7 +2166,7 @@ local TrackedComputers = {}                              -- [Model] = {parts, pr
 local function computeColor(screen)
     local ok = typeof(screen) == "Instance" and screen:IsA("BasePart")
     if ok and screen.Color == TARGET_RGB then
-        return Color3.fromRGB(0, 255, 0)                 -- green
+        return Color3.fromRGB(40, 127, 71)                 -- green
     end
     return DEFAULT_RGB
 end
