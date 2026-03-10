@@ -1,3 +1,8 @@
+-- Minimal ESP: Players + Beast + ComputerTables
+-- Stripped from Unnamed ESP by ic3w0lf
+-- No GUI · No file I/O · Xeno compatible (no GetDebugId)
+-- Uses identical drawing library & visuals as original Unnamed ESP
+
 if not cloneref then cloneref = function(o) return o end end
 
 local RunService   = cloneref(game:GetService("RunService"))
@@ -37,26 +42,15 @@ local QUAD_SUPPORTED_EXPLOIT = false
 local function Set(t, i, v) t[i] = v end
 
 -- ── Visibility helper (dot product, executor-independent) ────────────────────
--- Returns true if a world position is actually in front of the camera
--- This does NOT rely on WorldToViewportPoint at all
-local function IsInFrontOfCamera(worldPos)
-    local camCF = Camera.CFrame
-    local toTarget = (worldPos - camCF.Position)
+-- Returns inFront, inFOV in one call (avoids computing dot product twice)
+local function CheckVisibility(worldPos, camCF, marginDeg)
+    local toTarget = worldPos - camCF.Position
     local dist = toTarget.Magnitude
-    if dist < 0.01 then return true end
+    if dist < 0.01 then return true, true end
     local dot = camCF.LookVector:Dot(toTarget / dist)
-    return dot > 0
-end
-
--- Returns true if a world position is roughly within the camera's field of view
-local function IsInCameraFOV(worldPos, marginDeg)
-    local camCF = Camera.CFrame
-    local toTarget = (worldPos - camCF.Position)
-    local dist = toTarget.Magnitude
-    if dist < 0.01 then return true end
-    local dot = camCF.LookVector:Dot(toTarget / dist)
-    local halfFov = math.rad((Camera.FieldOfView / 2) + (marginDeg or 20))
-    return dot > math.cos(halfFov)
+    if dot <= 0 then return false, false end
+    local halfFov = math.rad((Camera.FieldOfView / 2) + (marginDeg or 30))
+    return true, dot > math.cos(halfFov)
 end
 
 -- ── Drawing helpers (identical to Unnamed ESP) ───────────────────────────────
@@ -85,11 +79,6 @@ local function Combine(...)
     return Output
 end
 
--- Check if a number is finite (not NaN, not inf)
-local function isFinite(n)
-    return n == n and n ~= math.huge and n ~= -math.huge
-end
-
 function LineBox:Create(Properties)
     local Box = { Visible = true }
 
@@ -111,83 +100,37 @@ function LineBox:Create(Properties)
     function Box:Update(CF, Size, Color, Properties)
         if not CF or not Size then return end
 
-        -- LAYER 1: Dot product — is the box center actually in front of the camera?
-        if not IsInFrontOfCamera(CF.Position) then
-            Box:SetVisible(false)
-            return
-        end
-
-        -- LAYER 2: FOV check — is the center roughly within the camera's FOV?
-        -- Use generous margin (40 degrees past FOV edge) so boxes partially on screen still show
-        if not IsInCameraFOV(CF.Position, 40) then
-            Box:SetVisible(false)
-            return
-        end
-
-        -- LAYER 3: Project center as single point (same as nametags) and sanity check
+        -- Project center and sanity check
         local centerSP = WorldToViewport(CF.Position)
-        local VPX, VPY = Camera.ViewportSize.X, Camera.ViewportSize.Y
 
-        if not isFinite(centerSP.X) or not isFinite(centerSP.Y) or not isFinite(centerSP.Z) then
+        if centerSP.Z <= 0
+        or centerSP.X ~= centerSP.X or centerSP.Y ~= centerSP.Y then
             Box:SetVisible(false)
             return
         end
 
-        if centerSP.Z <= 0 then
-            Box:SetVisible(false)
-            return
-        end
-
-        -- Center must be roughly on screen (generous margin)
-        local centerMargin = math.max(VPX, VPY)
-        if centerSP.X < -centerMargin or centerSP.X > VPX + centerMargin
-        or centerSP.Y < -centerMargin or centerSP.Y > VPY + centerMargin then
-            Box:SetVisible(false)
-            return
-        end
-
-        -- LAYER 4: Project the 4 corners
+        -- Project the 4 corners
         local TLPos = WorldToViewport((CF * CFrame.new( Size.X,  Size.Y, 0)).Position)
         local TRPos = WorldToViewport((CF * CFrame.new(-Size.X,  Size.Y, 0)).Position)
         local BLPos = WorldToViewport((CF * CFrame.new( Size.X, -Size.Y, 0)).Position)
         local BRPos = WorldToViewport((CF * CFrame.new(-Size.X, -Size.Y, 0)).Position)
 
-        -- LAYER 5: Check each corner is finite
-        local corners = {TLPos, TRPos, BLPos, BRPos}
-        for idx, c in ipairs(corners) do
-            if not isFinite(c.X) or not isFinite(c.Y) or not isFinite(c.Z) then
-                Box:SetVisible(false)
-                return
-            end
-        end
-
-        -- LAYER 6: All corners must have Z > 0 (in front of camera)
-        if TLPos.Z <= 0 or TRPos.Z <= 0 or BLPos.Z <= 0 or BRPos.Z <= 0 then
+        -- All corners must be finite and in front of camera
+        if TLPos.Z <= 0 or TRPos.Z <= 0 or BLPos.Z <= 0 or BRPos.Z <= 0
+        or TLPos.X ~= TLPos.X or TRPos.X ~= TRPos.X
+        or BLPos.X ~= BLPos.X or BRPos.X ~= BRPos.X then
             Box:SetVisible(false)
             return
         end
 
-        -- LAYER 7: No corner should be absurdly far from the projected center
-        -- If any corner is more than 1 viewport-width away from center, something is wrong
-        local maxCornerDist = math.max(VPX, VPY)
-        for idx, c in ipairs(corners) do
-            local dx = math.abs(c.X - centerSP.X)
-            local dy = math.abs(c.Y - centerSP.Y)
-            if dx > maxCornerDist or dy > maxCornerDist then
-                Box:SetVisible(false)
-                return
-            end
-        end
+        -- Box shouldn't be insanely large (catches edge-of-screen projection blow-up)
+        local VPX = Camera.ViewportSize.X
+        local boxW = math.max(TLPos.X, TRPos.X, BLPos.X, BRPos.X)
+                   - math.min(TLPos.X, TRPos.X, BLPos.X, BRPos.X)
+        local boxH = math.max(TLPos.Y, TRPos.Y, BLPos.Y, BRPos.Y)
+                   - math.min(TLPos.Y, TRPos.Y, BLPos.Y, BRPos.Y)
 
-        -- LAYER 8: The projected box shouldn't be insanely large
-        local minX = math.min(TLPos.X, TRPos.X, BLPos.X, BRPos.X)
-        local maxX = math.max(TLPos.X, TRPos.X, BLPos.X, BRPos.X)
-        local minY = math.min(TLPos.Y, TRPos.Y, BLPos.Y, BRPos.Y)
-        local maxY = math.max(TLPos.Y, TRPos.Y, BLPos.Y, BRPos.Y)
-        local boxW = maxX - minX
-        local boxH = maxY - minY
-
-        if boxW > VPX * 1.5 or boxH > VPY * 1.5 then
+        if boxW > VPX * 1.5 or boxH > VPX * 1.5 then
             Box:SetVisible(false)
             return
         end
@@ -441,6 +384,35 @@ local function CameraCon()
 end
 CameraCon()
 
+-- ── Toggle (F3) ──────────────────────────────────────────────────────────────
+local UserInputService = cloneref(game:GetService("UserInputService"))
+
+local function HideAllESP()
+    for _, d in pairs(PlayerESP) do
+        d.NameTag.Visible       = false
+        d.DistanceTag.Visible   = false
+        d.HeadDot.Visible       = false
+        d.Tracer.Visible        = false
+        d.OutlineTracer.Visible = false
+        d.Box:SetVisible(false)
+    end
+    for _, d in pairs(ComputerESP) do
+        d.NameTag.Visible       = false
+        d.DistanceTag.Visible   = false
+        d.Tracer.Visible        = false
+        d.OutlineTracer.Visible = false
+        d.Box:SetVisible(false)
+    end
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.F3 then
+        CFG.Enabled = not CFG.Enabled
+        if not CFG.Enabled then HideAllESP() end
+    end
+end)
+
 -- ── Main render loop ─────────────────────────────────────────────────────────
 local RSName = "MinimalESP_" .. tostring(math.random(1e6))
 RunService:UnbindFromRenderStep(RSName)
@@ -454,13 +426,19 @@ RunService:BindToRenderStep(RSName, Enum.RenderPriority.Camera.Value + 1, functi
         WTVP = Camera.WorldToViewportPoint
     end
 
+    -- Cache per-frame values
+    local camCF  = Camera.CFrame
+    local camPos = camCF.Position
+    local showBoxes   = CFG.ShowBoxes
+    local showNames   = CFG.ShowNames
+    local showDist    = CFG.ShowDistance
+    local showHealth  = CFG.ShowHealth
+    local showTracers = CFG.ShowTracers
+    local showDot     = CFG.ShowDot
+    local maxDist     = CFG.MaxDistance
+
     -- ── Players ──────────────────────────────────────────────────────────────
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player == LocalPlayer then continue end
-
-        local d = PlayerESP[player]
-        if not d then continue end
-
+    for player, d in pairs(PlayerESP) do
         local NameTag       = d.NameTag
         local DistanceTag   = d.DistanceTag
         local Tracer        = d.Tracer
@@ -473,28 +451,35 @@ RunService:BindToRenderStep(RSName, Enum.RenderPriority.Camera.Value + 1, functi
         local HumanoidRootPart = Character and Character:FindFirstChild('HumanoidRootPart')
         local Humanoid         = Character and Character:FindFirstChildOfClass('Humanoid')
 
-        local function hideAll()
+        if not Character or not Head or not HumanoidRootPart or not Humanoid
+        or Humanoid:GetState() == Enum.HumanoidStateType.Dead then
             NameTag.Visible       = false
             DistanceTag.Visible   = false
             HeadDot.Visible       = false
             Tracer.Visible        = false
             OutlineTracer.Visible = false
             Box:SetVisible(false)
+            continue
         end
 
-        local Dead = Humanoid and Humanoid:GetState().Name == 'Dead'
-
-        if not Character or not Head or not HumanoidRootPart or not Humanoid or Dead then
-            hideAll(); continue
+        local headPos = Head.Position
+        local Distance = (camPos - headPos).Magnitude
+        if Distance > maxDist then
+            NameTag.Visible       = false
+            DistanceTag.Visible   = false
+            HeadDot.Visible       = false
+            Tracer.Visible        = false
+            OutlineTracer.Visible = false
+            Box:SetVisible(false)
+            continue
         end
 
-        local ScreenPosition, Vis = WorldToViewport(Head.Position)
+        local ScreenPosition = WorldToViewport(headPos)
 
-        local Distance = (Camera.CFrame.Position - Head.Position).Magnitude
-        if Distance > CFG.MaxDistance then hideAll(); continue end
-
+        -- Color (cache IsBeast result — avoid calling it twice)
+        local isBeast = IsBeast(player)
         local Color
-        if IsBeast(player) then
+        if isBeast then
             Color = CFG.BeastColor
         elseif CheckTeam(player) then
             Color = CFG.TeamColor
@@ -502,17 +487,15 @@ RunService:BindToRenderStep(RSName, Enum.RenderPriority.Camera.Value + 1, functi
             Color = CFG.EnemyColor
         end
 
-        -- Tracers (identical to Unnamed ESP)
-        local OPos = Camera.CFrame:pointToObjectSpace(Head.Position)
+        -- Tracers — only compute tracer math when tracers are enabled
+        if showTracers then
+            local OPos = camCF:pointToObjectSpace(headPos)
+            if ScreenPosition.Z < 0 then
+                local AT = math.atan2(OPos.Y, OPos.X) + math.pi
+                OPos = CFrame.Angles(0, 0, AT):vectorToWorldSpace((CFrame.Angles(0, math.rad(89.9), 0):vectorToWorldSpace(V3New(0, 0, -1))))
+            end
+            local Position = WorldToViewport(camCF:pointToWorldSpace(OPos))
 
-        if ScreenPosition.Z < 0 then
-            local AT = math.atan2(OPos.Y, OPos.X) + math.pi
-            OPos = CFrame.Angles(0, 0, AT):vectorToWorldSpace((CFrame.Angles(0, math.rad(89.9), 0):vectorToWorldSpace(V3New(0, 0, -1))))
-        end
-
-        local Position = WorldToViewport(Camera.CFrame:pointToWorldSpace(OPos))
-
-        if CFG.ShowTracers then
             if TracerPosition.X >= Camera.ViewportSize.X or TracerPosition.Y >= Camera.ViewportSize.Y or TracerPosition.X < 0 or TracerPosition.Y < 0 then
                 TracerPosition = V2New(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y - 135)
             end
@@ -531,18 +514,16 @@ RunService:BindToRenderStep(RSName, Enum.RenderPriority.Camera.Value + 1, functi
             OutlineTracer.Visible = false
         end
 
-        -- Use dot product to check if head is actually visible (executor-independent)
-        local headInFront = IsInFrontOfCamera(Head.Position)
-        local headInFOV   = IsInCameraFOV(Head.Position, 30)
+        -- Visibility check (single dot product for both front + FOV)
+        local headInFront, headInFOV = CheckVisibility(headPos, camCF, 30)
 
         if headInFront and ScreenPosition.Z > 0 then
-            local ScreenPositionUpper = WorldToViewport((HumanoidRootPart:GetRenderCFrame() * CFrame.new(0, Head.Size.Y + HumanoidRootPart.Size.Y, 0)).Position)
             local Scale = Head.Size.Y / 2
 
-            -- Name tag (same as before — these work fine)
-            if CFG.ShowNames then
-                local tag = player.Name
-                if IsBeast(player) then tag = "[BEAST] " .. tag end
+            -- Name tag
+            if showNames then
+                local ScreenPositionUpper = WorldToViewport((HumanoidRootPart:GetRenderCFrame() * CFrame.new(0, Head.Size.Y + HumanoidRootPart.Size.Y, 0)).Position)
+                local tag = isBeast and ("[BEAST] " .. player.Name) or player.Name
                 NameTag.Visible      = true
                 NameTag.Text         = tag
                 NameTag.Size         = CFG.TextSize
@@ -556,13 +537,21 @@ RunService:BindToRenderStep(RSName, Enum.RenderPriority.Camera.Value + 1, functi
             end
 
             -- Distance / Health tag
-            if CFG.ShowDistance or CFG.ShowHealth then
+            if showDist or showHealth then
                 local Str = ''
-                if CFG.ShowDistance then
+                if showDist then
                     Str = Str .. string.format('[%d] ', Distance)
                 end
-                if CFG.ShowHealth then
+                if showHealth then
                     Str = Str .. string.format('[%d/%d] [%s%%]', Humanoid.Health, Humanoid.MaxHealth, math.floor(Humanoid.Health / Humanoid.MaxHealth * 100))
+                end
+
+                local distPos
+                if showNames then
+                    distPos = NameTag.Position + V2New(0, NameTag.TextBounds.Y)
+                else
+                    local sp2 = WorldToViewport((HumanoidRootPart:GetRenderCFrame() * CFrame.new(0, Head.Size.Y + HumanoidRootPart.Size.Y, 0)).Position)
+                    distPos = V2New(sp2.X, sp2.Y)
                 end
 
                 DistanceTag.Visible      = true
@@ -572,28 +561,25 @@ RunService:BindToRenderStep(RSName, Enum.RenderPriority.Camera.Value + 1, functi
                 DistanceTag.Transparency = 0.85
                 DistanceTag.Text         = Str
                 DistanceTag.OutlineColor = Color3.new(0.05, 0.05, 0.05)
-                DistanceTag.Position     = (NameTag.Visible and NameTag.Position + V2New(0, NameTag.TextBounds.Y) or V2New(ScreenPositionUpper.X, ScreenPositionUpper.Y))
+                DistanceTag.Position     = distPos
             else
                 DistanceTag.Visible = false
             end
 
             -- Head dot (gated by FOV check)
-            if CFG.ShowDot and headInFOV then
+            if showDot and headInFOV then
                 local Top    = WorldToViewport((Head.CFrame * CFrame.new(0,  Scale, 0)).Position)
                 local Bottom = WorldToViewport((Head.CFrame * CFrame.new(0, -Scale, 0)).Position)
-                local Radius = math.abs((Top - Bottom).Y)
-
                 HeadDot.Visible  = true
                 HeadDot.Color    = Color
                 HeadDot.Position = V2New(ScreenPosition.X, ScreenPosition.Y)
-                HeadDot.Radius   = Radius
+                HeadDot.Radius   = math.abs((Top - Bottom).Y)
             else
                 HeadDot.Visible = false
             end
 
-            -- Box: Box:Update has 8 layers of safety checks internally
-            -- Only call it if head is within FOV (prevents edge cases entirely)
-            if CFG.ShowBoxes and headInFOV and HumanoidRootPart then
+            -- Box (gated by FOV)
+            if showBoxes and headInFOV then
                 Box:Update(HumanoidRootPart.CFrame, V3New(2, 3, 1) * (Scale * 2), Color)
             else
                 Box:SetVisible(false)
@@ -614,15 +600,14 @@ RunService:BindToRenderStep(RSName, Enum.RenderPriority.Camera.Value + 1, functi
         local OutlineTracer = d.OutlineTracer
         local Box           = d.Box
 
-        local function hideAll()
+        if not model.Parent then
             NameTag.Visible       = false
             DistanceTag.Visible   = false
             Tracer.Visible        = false
             OutlineTracer.Visible = false
             Box:SetVisible(false)
+            continue
         end
-
-        if not model.Parent then hideAll(); continue end
 
         local screen = model:FindFirstChild("Screen", true)
         local useScreen = screen and screen:IsA("BasePart")
@@ -631,25 +616,53 @@ RunService:BindToRenderStep(RSName, Enum.RenderPriority.Camera.Value + 1, functi
         if useScreen then
             refPos = screen.Position
         else
-            local ok, cf, sz = pcall(function() return model:GetBoundingBox() end)
-            if not ok or not cf then hideAll(); continue end
+            local ok, cf = pcall(function() return model:GetBoundingBox() end)
+            if not ok or not cf then
+                NameTag.Visible       = false
+                DistanceTag.Visible   = false
+                Tracer.Visible        = false
+                OutlineTracer.Visible = false
+                Box:SetVisible(false)
+                continue
+            end
             refPos = cf.Position
         end
 
-        -- Dot product check (executor-independent)
-        if not IsInFrontOfCamera(refPos) then hideAll(); continue end
+        local dist = (camPos - refPos).Magnitude
+        if dist > maxDist then
+            NameTag.Visible       = false
+            DistanceTag.Visible   = false
+            Tracer.Visible        = false
+            OutlineTracer.Visible = false
+            Box:SetVisible(false)
+            continue
+        end
+
+        -- Single visibility check (front + FOV)
+        local inFront, inFOV = CheckVisibility(refPos, camCF, 30)
+        if not inFront then
+            NameTag.Visible       = false
+            DistanceTag.Visible   = false
+            Tracer.Visible        = false
+            OutlineTracer.Visible = false
+            Box:SetVisible(false)
+            continue
+        end
 
         local sp = WorldToViewport(refPos)
-        if sp.Z <= 0 then hideAll(); continue end
-
-        local dist = (Camera.CFrame.Position - refPos).Magnitude
-        if dist > CFG.MaxDistance then hideAll(); continue end
+        if sp.Z <= 0 then
+            NameTag.Visible       = false
+            DistanceTag.Visible   = false
+            Tracer.Visible        = false
+            OutlineTracer.Visible = false
+            Box:SetVisible(false)
+            continue
+        end
 
         local color = GetComputerColor(model)
-        local inFOV = IsInCameraFOV(refPos, 30)
 
-        -- Box (gated by FOV; Box:Update has internal safety layers)
-        if CFG.ShowBoxes and inFOV then
+        -- Box (gated by FOV; Box:Update has internal safety)
+        if showBoxes and inFOV then
             if useScreen then
                 Box:Update(screen.CFrame, screen.Size, color)
             else
@@ -665,7 +678,7 @@ RunService:BindToRenderStep(RSName, Enum.RenderPriority.Camera.Value + 1, functi
         end
 
         -- Name
-        if CFG.ShowNames and inFOV then
+        if showNames and inFOV then
             NameTag.Visible  = true
             NameTag.Text     = "Computer"
             NameTag.Size     = CFG.TextSize
@@ -677,7 +690,7 @@ RunService:BindToRenderStep(RSName, Enum.RenderPriority.Camera.Value + 1, functi
         end
 
         -- Distance
-        if CFG.ShowDistance and inFOV then
+        if showDist and inFOV then
             DistanceTag.Visible  = true
             DistanceTag.Size     = CFG.TextSize - 1
             DistanceTag.Outline  = CFG.TextOutline
@@ -689,13 +702,13 @@ RunService:BindToRenderStep(RSName, Enum.RenderPriority.Camera.Value + 1, functi
         end
 
         -- Tracers
-        if CFG.ShowTracers then
-            local OPos = Camera.CFrame:pointToObjectSpace(refPos)
+        if showTracers then
+            local OPos = camCF:pointToObjectSpace(refPos)
             if sp.Z < 0 then
                 local AT = math.atan2(OPos.Y, OPos.X) + math.pi
                 OPos = CFrame.Angles(0, 0, AT):vectorToWorldSpace((CFrame.Angles(0, math.rad(89.9), 0):vectorToWorldSpace(V3New(0, 0, -1))))
             end
-            local Position = WorldToViewport(Camera.CFrame:pointToWorldSpace(OPos))
+            local Position = WorldToViewport(camCF:pointToWorldSpace(OPos))
 
             Tracer.Transparency        = math.clamp(dist / 200, 0.45, 0.8)
             Tracer.Visible             = true
